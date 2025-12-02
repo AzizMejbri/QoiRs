@@ -1,3 +1,7 @@
+use std::default;
+
+use crate::qoi::types16::Pixel16;
+
 pub struct Range<T> {
     lower_limit: T,
     upper_limit: T,
@@ -35,32 +39,37 @@ impl Pixel {
         (self.r, self.g, self.b, self.a)
     }
     pub fn hash(&self) -> u8 {
-        (self.r * 3 + self.g * 5 + self.b * 6 + self.a * 11) % 64
+        ((self.r as u16 * 3 + self.g as u16 * 5 + self.b as u16 * 6 + self.a as u16 * 11) % 64)
+            as u8
+    }
+    pub fn as_bytes(&self) -> Vec<u8> {
+        [self.r, self.g, self.b, self.a].to_vec()
     }
 }
 
-#[derive(PartialOrd, PartialEq, Clone, Copy, Default)]
-pub struct Pixel16 {
-    r: u16,
-    g: u16,
-    b: u16,
-    a: u16,
-}
-impl Pixel16 {
-    pub fn new(r: u16, g: u16, b: u16, a: u16) -> Self {
-        Self { r, g, b, a }
-    }
-    pub fn extract(&self) -> (u16, u16, u16, u16) {
-        (self.r, self.g, self.b, self.a)
-    }
-    pub fn hash(&self) -> u8 {
-        ((self.r * 3 + self.g * 5 + self.b * 6 + self.a * 11) % 64) as u8
-    }
-}
-
+#[derive(Clone, Copy)]
 pub enum DynamicPixel {
     Pixel(Pixel),
     Pixel16(Pixel16),
+}
+
+impl DynamicPixel {
+    pub fn as_pixel(&self) -> Result<Pixel, String> {
+        match self {
+            DynamicPixel::Pixel(value) => Ok(*value),
+            DynamicPixel::Pixel16(_) => {
+                Err("Cannot convert a 16-bit pixel to an 8-bit pixel".to_string())
+            }
+        }
+    }
+    pub fn as_pixel16(&self) -> Result<Pixel16, String> {
+        match self {
+            DynamicPixel::Pixel16(value) => Ok(*value),
+            DynamicPixel::Pixel(_) => {
+                Err("Cannot convert a 16-bit pixel to an 8-bit pixel (jk! we can but we won't, you have a conflict)".to_string())
+            }
+        }
+    }
 }
 
 #[derive(PartialOrd, PartialEq)]
@@ -74,10 +83,10 @@ pub struct PixelDiff {
 impl PixelDiff {
     pub fn new(p1: &Pixel, p2: &Pixel) -> Self {
         Self {
-            r: (p1.r - p2.r) as i8,
-            g: (p1.g - p2.g) as i8,
-            b: (p1.b - p2.b) as i8,
-            a: (p1.a - p2.a) as i8,
+            r: (p1.r as i16 - p2.r as i16) as i8,
+            g: (p1.g as i16 - p2.g as i16) as i8,
+            b: (p1.b as i16 - p2.b as i16) as i8,
+            a: (p1.a as i16 - p2.a as i16) as i8,
         }
     }
     pub fn new2(r: i8, g: i8, b: i8, a: i8) -> Self {
@@ -91,10 +100,10 @@ impl PixelDiff {
                 g: (p1.g - p2.g).try_into().expect(
                     "Error Converting in gd, PixelDiff::new_diff(&Pixel, &Pixel) -> PixelDiff",
                 ),
-                r: ((p1.r - p2.r) / (p1.g - p2.g)).try_into().expect(
+                r: ((p1.r - p2.r) - (p1.g - p2.g)).try_into().expect(
                     "Error Convering in dr, PixelDiff::new_diff(&Pixel, &Pixel) -> PixelDiff",
                 ),
-                b: ((p1.b - p2.b) / (p1.g - p2.g)).try_into().expect(
+                b: ((p1.b - p2.b) - (p1.g - p2.g)).try_into().expect(
                     "Error Convering in db, PixelDiff::new_diff(&Pixel, &Pixel) -> PixelDiff",
                 ),
                 a: 0,
@@ -128,7 +137,7 @@ pub struct QoiHeader {
 }
 
 impl QoiHeader {
-    fn new(width: u32, height: u32, chanels: u8, colorspace: u8) -> Self {
+    pub fn new(width: u32, height: u32, chanels: u8, colorspace: u8) -> Self {
         Self {
             magic_0: 113,
             magic_1: 111,
@@ -140,8 +149,8 @@ impl QoiHeader {
             colorspace,
         }
     }
-    fn as_bytes(&self) -> Vec<u8> {
-        let output: &mut Vec<u8> = &mut Vec::with_capacity(112);
+    pub fn as_bytes(&self) -> Vec<u8> {
+        let output: &mut Vec<u8> = &mut Vec::with_capacity(14);
         output.push(self.magic_0);
         output.push(self.magic_1);
         output.push(self.magic_2);
@@ -221,7 +230,7 @@ pub struct QoiOpIndex {
 
 impl QoiOpIndex {
     pub fn new(index: u8) -> Self {
-        assert!(0 <= index && index <= 64);
+        assert!(index <= 64);
         Self {
             tag_index: index & 0b00111111,
         }

@@ -2,6 +2,7 @@ pub mod cli;
 pub mod decoder;
 pub mod encoder;
 pub mod types;
+pub mod types16;
 
 pub use cli::cli;
 pub use decoder::_decode;
