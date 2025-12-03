@@ -4,11 +4,10 @@ use crate::qoi::types::{
 };
 use crate::qoi::types16::Pixel16;
 use std::result::Result;
-use std::slice::Iter;
-use std::str::from_utf8;
 use std::string::String;
 use std::vec::Vec;
 
+#[inline(always)]
 fn read_number(bytestream: &[u8], start: &mut usize) -> u32 {
     while bytestream[*start] == b' ' || bytestream[*start] == b'\n' {
         *start += 1;
@@ -48,15 +47,9 @@ pub fn bytestream_to_pixelstream(bytestream: &[u8]) -> (Vec<DynamicPixel>, u32, 
         } else {
             while i < (width * height * 6) as usize {
                 image.push(DynamicPixel::Pixel16(Pixel16::new(
-                    from_utf8(&bytestream[i..i + 2]).unwrap().parse().unwrap(),
-                    from_utf8(&bytestream[i + 2..i + 4])
-                        .unwrap()
-                        .parse()
-                        .unwrap(),
-                    from_utf8(&bytestream[i + 4..i + 6])
-                        .unwrap()
-                        .parse()
-                        .unwrap(),
+                    u16::from_be_bytes([bytestream[i], bytestream[i + 1]]),
+                    u16::from_be_bytes([bytestream[i + 2], bytestream[i + 3]]),
+                    u16::from_be_bytes([bytestream[i + 4], bytestream[i + 6]]),
                     0,
                 )));
                 i += 6;
@@ -86,12 +79,9 @@ pub fn encode(
                 .collect::<Vec<Pixel>>();
 
             let mut array_ = [Pixel::default(); 64];
-            array_.copy_from_slice(
-                &array
-                    .iter()
-                    .map(|p| p.as_pixel().unwrap())
-                    .collect::<Vec<Pixel>>(),
-            );
+            for (i, dp) in array.iter().enumerate().take(64) {
+                array_[i] = dp.as_pixel().expect("expected Pixel variant in array");
+            }
             encode_(&image_[..], &mut array_, width, height)
         }
         DynamicPixel::Pixel16(_) => {
@@ -101,75 +91,83 @@ pub fn encode(
                 .collect::<Vec<Pixel16>>();
 
             let mut array_ = [Pixel16::default(); 64];
-            array_.copy_from_slice(
-                &array
-                    .iter()
-                    .map(|p| p.as_pixel16().unwrap())
-                    .collect::<Vec<Pixel16>>(),
-            );
+            for (i, dp) in array.iter().enumerate().take(64) {
+                array_[i] = dp.as_pixel16().expect("expected Pixel variant in array");
+            }
             encode_16(&image_[..], &array_, width, height, max_col_val)
         }
     }
 }
+
 pub fn encode_(
     image: &[Pixel],
     array: &mut [Pixel; 64],
     width: u32,
     height: u32,
 ) -> Result<Vec<u8>, String> {
-    let output: &mut Vec<u8> = &mut Vec::with_capacity(100);
-    output.append(&mut QoiHeader::new(width, height, 3, 0).as_bytes());
+    let output: &mut Vec<u8> = &mut Vec::with_capacity(22usize + (width * height * 5) as usize);
+    QoiHeader::new(width, height, 3, 0).append_self(output);
     let mut prev: &Pixel = &Pixel::new(0, 0, 0, 255);
-    let empty0: Pixel = Pixel::new(1, 0, 0, 0);
-    let emptyn: Pixel = Pixel::new(0, 0, 0, 0);
-    let mut image_iterator: Iter<Pixel> = image.iter();
-    while let Some(pixel) = image_iterator.next() {
-        let values: (u8, u8, u8, u8) = pixel.extract();
-        let diff: PixelDiff = PixelDiff::new(pixel, prev);
-        let diff_diff: Option<PixelDiff> = PixelDiff::new_diff(pixel, prev);
+    let mut i: usize = 0;
+    let n = image.len();
+    while (0..n).contains(&i) {
+        let pixel = &image[i];
         if pixel == prev {
             let mut run: u8 = 1;
-            while let Some(value) = image_iterator.by_ref().next() {
-                if value == pixel && run < 62 {
-                    run += 1
-                } else {
-                    break;
-                }
+            while (i + run as usize) < n && (&image[i + run as usize] == pixel) && (run < 62) {
+                run += 1;
             }
-            output.append(&mut QoiOpRun::new(run).as_bytes());
-        } else if array[pixel.hash() as usize] == *pixel {
-            output.append(&mut QoiOpIndex::new(pixel.hash()).as_bytes());
-        } else if pixel.hash() == 0 && array[0] == empty0 || array[pixel.hash() as usize] == emptyn
-        {
-            array[pixel.hash() as usize] = *pixel;
-            output.append(&mut QoiOpIndex::new(pixel.hash()).as_bytes());
-        } else if diff.belongs(
+            i += run as usize;
+            QoiOpRun::new(run).append_self(output);
+
+            prev = pixel;
+            continue;
+        }
+        let h = pixel.hash();
+        if array[h as usize] == *pixel {
+            QoiOpIndex::new(h).append_self(output);
+            prev = pixel;
+            i += 1;
+            continue;
+        }
+        array[h as usize] = *pixel;
+        let diff: PixelDiff = PixelDiff::new(pixel, prev);
+        if diff.belongs(
             Range::new(PixelDiff::new2(-2, -2, -2, 0), PixelDiff::new2(1, 1, 1, 0)).unwrap(),
         ) {
             let rgba: (i8, i8, i8, i8) = diff.extract();
-            output.append(&mut QoiOpDiff::new(rgba.0, rgba.1, rgba.2).as_bytes());
-        } else if let Some(value) = diff_diff {
-            if value.belongs(
-                Range::new(
-                    PixelDiff::new2(-32, -8, -8, 0),
-                    PixelDiff::new2(31, 7, 7, 0),
-                )
-                .unwrap(),
-            ) {
-                let extracted = value.extract();
-                output
-                    .append(&mut QoiOpLuma::new(extracted.1, extracted.0, extracted.2).as_bytes());
-            }
-        } else if values.3 == prev.extract().3 {
-            output.append(&mut QoiOpRGB::new(values.0, values.1, values.2).as_bytes());
-        } else {
-            output.append(&mut QoiOpRGBA::new(values.0, values.1, values.2, values.3).as_bytes());
+            QoiOpDiff::new(rgba.0, rgba.1, rgba.2).append_self(output);
+            prev = pixel;
+            i += 1;
+            continue;
         }
+        let diff_diff: PixelDiff = PixelDiff::new_diff(pixel, prev);
+        if diff_diff.belongs(
+            Range::new(
+                PixelDiff::new2(-8, -32, -8, 0),
+                PixelDiff::new2(7, 31, 7, 0),
+            )
+            .unwrap(),
+        ) {
+            let extracted = diff_diff.extract();
+            QoiOpLuma::new(extracted.1, extracted.0, extracted.2).append_self(output);
+            prev = pixel;
+            i += 1;
+            continue;
+        }
+        let values: (u8, u8, u8, u8) = pixel.extract();
+        if diff_diff.is_alpha_zero() {
+            QoiOpRGB::new(values.0, values.1, values.2).append_self(output);
+            prev = pixel;
+            i += 1;
+            continue;
+        }
+        QoiOpRGBA::new(values.0, values.1, values.2, values.3).append_self(output);
 
         prev = pixel;
+        i += 1;
     }
-    output.append(&mut Pixel::new(0, 0, 0, 255).as_bytes());
-    output.append(&mut array.map(|p| p.as_bytes()).concat());
+    output.extend_from_slice(&[0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 1u8]);
     Ok(output.to_vec())
 }
 

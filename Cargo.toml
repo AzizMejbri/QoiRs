@@ -5,3 +5,11 @@ edition = "2024"
 
 [dependencies]
 clap = { version = "4.5.53", features = ["derive", "cargo"] }
+
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "qoi_bench"
+harness = false
